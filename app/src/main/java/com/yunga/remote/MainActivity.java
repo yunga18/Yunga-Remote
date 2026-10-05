@@ -166,7 +166,7 @@ public class MainActivity extends Activity {
         syncA.setOnClickListener(v->{ irKeyboardSynced=true; updateIrKeyboardStatus(); toast("Teclado IR sincronizado en A"); });
         irKCard.addView(top(syncA,4));
 
-        TextView irHint=txt("Después de cada letra, Yunga Remote devuelve automáticamente el cursor a A para no perder la posición.",12,MUTED,false);
+        TextView irHint=txt("Después de cada letra, Yunga Remote deshace exactamente los movimientos y vuelve a A. Los botones Limpiar/Borrar/Busca requieren volver a sincronizar.",12,MUTED,false);
         irHint.setPadding(0,dp(10),0,dp(10)); irKCard.addView(irHint);
 
         String[] irRows={"ABCDEFG","HIJKLMN","OPQRSTU","VWXYZ"};
@@ -347,13 +347,15 @@ public class MainActivity extends Activity {
         }
         if(row<0) return;
 
-        // El cursor lógico siempre parte de A. Va a la tecla, pulsa OK y vuelve a A.
+        // El cursor lógico siempre parte de A. Va a la tecla, pulsa OK y deshace
+        // exactamente el mismo recorrido. No usamos pulsaciones extra porque XTV
+        // puede saltar/envolver el foco hacia los controles superiores.
         for(int i=0;i<row;i++) irStep(CMD_DOWN);
         for(int i=0;i<col;i++) irStep(CMD_RIGHT);
         irStep(CMD_OK);
         sleepIr(35);
+        for(int i=0;i<col;i++) irStep(CMD_LEFT);
         for(int i=0;i<row;i++) irStep(CMD_UP);
-        for(int i=0;i<8;i++) irStep(CMD_LEFT);
     }
 
     private void queueIrSpecial(int topIndex,boolean leavesKeyboard){
@@ -363,14 +365,10 @@ public class MainActivity extends Activity {
             irStep(CMD_UP);
             for(int i=0;i<topIndex;i++) irStep(CMD_RIGHT);
             irStep(CMD_OK);
-            if(leavesKeyboard){
-                irKeyboardSynced=false;
-                runOnUiThread(this::updateIrKeyboardStatus);
-            }else{
-                sleepIr(40);
-                irStep(CMD_DOWN);
-                for(int i=0;i<8;i++) irStep(CMD_LEFT);
-            }
+            // Los controles superiores no forman una cuadrícula regular con las letras.
+            // Después de usarlos, pedimos resincronizar en A para evitar saltos de foco.
+            irKeyboardSynced=false;
+            runOnUiThread(this::updateIrKeyboardStatus);
         });
     }
 
