@@ -5,7 +5,9 @@ import android.app.Activity;
 import android.bluetooth.*;
 import android.content.*;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.ConsumerIrManager;
@@ -52,13 +54,28 @@ public class MainActivity extends Activity {
     private TextView irKeyboardStatus;
     private static final int IR_STEP_DELAY=95;
 
-    private final byte[] keyboardDescriptor = new byte[] {
-            0x05,0x01,0x09,0x06,(byte)0xA1,0x01,0x05,0x07,0x19,(byte)0xE0,0x29,(byte)0xE7,
+    // HID compuesto: Report ID 1 = teclado, Report ID 2 = mouse relativo.
+    // El TV Stick ve al Redmi como un único dispositivo teclado + mouse.
+    private final byte[] hidDescriptor = new byte[] {
+            // Keyboard - Report ID 1
+            0x05,0x01,0x09,0x06,(byte)0xA1,0x01,(byte)0x85,0x01,
+            0x05,0x07,0x19,(byte)0xE0,0x29,(byte)0xE7,
             0x15,0x00,0x25,0x01,0x75,0x01,(byte)0x95,0x08,(byte)0x81,0x02,
-            (byte)0x95,0x01,0x75,0x08,(byte)0x81,0x01,(byte)0x95,0x05,0x75,0x01,
-            0x05,0x08,0x19,0x01,0x29,0x05,(byte)0x91,0x02,(byte)0x95,0x01,0x75,0x03,
-            (byte)0x91,0x01,(byte)0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x65,0x05,0x07,
-            0x19,0x00,0x29,0x65,(byte)0x81,0x00,(byte)0xC0
+            (byte)0x95,0x01,0x75,0x08,(byte)0x81,0x01,
+            (byte)0x95,0x05,0x75,0x01,0x05,0x08,0x19,0x01,0x29,0x05,(byte)0x91,0x02,
+            (byte)0x95,0x01,0x75,0x03,(byte)0x91,0x01,
+            (byte)0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x65,0x05,0x07,
+            0x19,0x00,0x29,0x65,(byte)0x81,0x00,(byte)0xC0,
+
+            // Mouse - Report ID 2: buttons, X, Y, wheel
+            0x05,0x01,0x09,0x02,(byte)0xA1,0x01,(byte)0x85,0x02,
+            0x09,0x01,(byte)0xA1,0x00,
+            0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,
+            (byte)0x95,0x03,0x75,0x01,(byte)0x81,0x02,
+            (byte)0x95,0x01,0x75,0x05,(byte)0x81,0x01,
+            0x05,0x01,0x09,0x30,0x09,0x31,0x09,0x38,
+            0x15,(byte)0x81,0x25,0x7F,0x75,0x08,(byte)0x95,0x03,(byte)0x81,0x06,
+            (byte)0xC0,(byte)0xC0
     };
 
     private final BluetoothHidDevice.Callback hidCallback=new BluetoothHidDevice.Callback(){
@@ -110,7 +127,7 @@ public class MainActivity extends Activity {
         scroll.addView(root);
 
         root.addView(txt("Yunga Remote",30,TEXT,true));
-        TextView sub=txt("Control X96 Max+ por infrarrojo + teclado Bluetooth",14,MUTED,false);
+        TextView sub=txt("Control X96 Max+ por infrarrojo + teclado y touchpad Bluetooth",14,MUTED,false);
         sub.setPadding(0,dp(4),0,dp(14)); root.addView(sub);
 
         LinearLayout statuses=row();
@@ -215,12 +232,48 @@ public class MainActivity extends Activity {
         TextView irNote=txt("Este modo está calibrado para la disposición de XTV de tu foto. Si mueves el cursor manualmente, vuelve a colocarlo sobre A y pulsa Sincronizar.",12,MUTED,false);
         irNote.setPadding(0,dp(12),0,0); irKCard.addView(irNote);
 
+
+        root.addView(section("TOUCHPAD BLUETOOTH"));
+        LinearLayout mouseCard=card(); root.addView(mouseCard);
+
+        TextView mouseIntro=txt("Usa el celular como el touchpad de una laptop. Reutiliza la misma conexión Bluetooth HID del teclado.",14,MUTED,false);
+        mouseCard.addView(mouseIntro);
+
+        TrackpadView touchpad=new TrackpadView(this);
+        LinearLayout.LayoutParams padLp=new LinearLayout.LayoutParams(-1,dp(250));
+        padLp.topMargin=dp(14);
+        mouseCard.addView(touchpad,padLp);
+
+        LinearLayout mouseClicks=row(); mouseClicks.setPadding(0,dp(10),0,0);
+        Button leftClick=action("Clic izquierdo",ACCENT,BG);
+        leftClick.setOnClickListener(v->mouseClick(1));
+        Button rightClick=action("Clic derecho",BTN,TEXT);
+        rightClick.setOnClickListener(v->mouseClick(2));
+        mouseClicks.addView(leftClick,weight(54));
+        mouseClicks.addView(space(dp(8),1));
+        mouseClicks.addView(rightClick,weight(54));
+        mouseCard.addView(mouseClicks);
+
+        LinearLayout wheelButtons=row(); wheelButtons.setPadding(0,dp(8),0,0);
+        Button scrollUp=action("↑ Scroll",BTN,TEXT);
+        scrollUp.setOnClickListener(v->sendMouseReport(0,0,0,3));
+        Button scrollDown=action("↓ Scroll",BTN,TEXT);
+        scrollDown.setOnClickListener(v->sendMouseReport(0,0,0,-3));
+        wheelButtons.addView(scrollUp,weight(50));
+        wheelButtons.addView(space(dp(8),1));
+        wheelButtons.addView(scrollDown,weight(50));
+        mouseCard.addView(wheelButtons);
+
+        TextView mouseHelp=txt("Un dedo: mover · toque: clic izquierdo · mantener y arrastrar: arrastrar · dos dedos vertical: scroll.",12,MUTED,false);
+        mouseHelp.setPadding(0,dp(12),0,0);
+        mouseCard.addView(mouseHelp);
+
         root.addView(section("TECLADO BLUETOOTH"));
         LinearLayout kcard=card(); root.addView(kcard);
-        TextView intro=txt("Sin instalar nada en el TV Stick: el celular intenta funcionar como teclado Bluetooth HID.",14,MUTED,false);
+        TextView intro=txt("Sin instalar nada en el TV Stick: el celular funciona como teclado + mouse Bluetooth HID.",14,MUTED,false);
         kcard.addView(intro);
 
-        Button activate=action("1. Activar teclado Bluetooth",ACCENT,BG);
+        Button activate=action("1. Activar teclado + mouse Bluetooth",ACCENT,BG);
         activate.setOnClickListener(v->registerKeyboard()); kcard.addView(top(activate,14));
 
         Button discover=action("2. Hacer visible el celular (5 min)",BTN,TEXT);
@@ -247,7 +300,7 @@ public class MainActivity extends Activity {
         Button refresh=action("Actualizar dispositivos emparejados",BTN,TEXT);
         refresh.setOnClickListener(v->refreshPaired()); kcard.addView(top(refresh,8));
 
-        Button connect=action("3. Conectar como teclado",GREEN,BG);
+        Button connect=action("3. Conectar teclado + touchpad",GREEN,BG);
         connect.setOnClickListener(v->connectHost()); kcard.addView(top(connect,8));
 
         TextView lbl=txt("Escribir en el TV Stick",16,TEXT,true);
@@ -268,7 +321,7 @@ public class MainActivity extends Activity {
         Button enter=action("↵ Enter",BTN,TEXT); enter.setOnClickListener(v->sendSpecial((byte)0x28));
         special.addView(del,weight(54)); special.addView(space(dp(8),1)); special.addView(enter,weight(54)); kcard.addView(special);
 
-        TextView note=txt("El teclado Bluetooth depende del soporte HID del Redmi y del TV Stick. El control infrarrojo funciona de forma independiente.",12,MUTED,false);
+        TextView note=txt("Teclado y touchpad comparten la misma conexión HID. Si el TV Stick ya estaba emparejado con una versión anterior, quizá debas olvidarlo y emparejarlo otra vez para que detecte también el mouse.",12,MUTED,false);
         note.setPadding(0,dp(14),0,0); kcard.addView(note);
 
         refreshPaired();
@@ -403,9 +456,9 @@ public class MainActivity extends Activity {
         if(hid==null){ toast("Perfil HID no disponible todavía"); return; }
         if(hidRegistered){ toast("El teclado Bluetooth ya está activo"); return; }
         BluetoothHidDeviceAppSdpSettings sdp=new BluetoothHidDeviceAppSdpSettings(
-                "Yunga Remote","Teclado para TV Stick","Yunga",(byte)0x40,keyboardDescriptor);
+                "Yunga Remote","Teclado y touchpad para TV Stick","Yunga",BluetoothHidDevice.SUBCLASS1_COMBO,hidDescriptor);
         boolean ok=hid.registerApp(sdp,null,null,getMainExecutor(),hidCallback);
-        toast(ok?"Activando teclado Bluetooth…":"Android rechazó la activación HID");
+        toast(ok?"Activando teclado + mouse Bluetooth…":"Android rechazó la activación HID");
     }
 
     private void makeDiscoverable(){
@@ -428,7 +481,7 @@ public class MainActivity extends Activity {
     }
 
     private void connectHost(){
-        if(!hidRegistered){ toast("Primero activa el teclado Bluetooth"); return; }
+        if(!hidRegistered){ toast("Primero activa teclado + mouse Bluetooth"); return; }
         if(hid==null || pairedDevices.isEmpty()){ toast("Empareja primero el TV Stick"); return; }
         int p=pairedSpinner.getSelectedItemPosition(); if(p<0 || p>=pairedDevices.size()) p=0;
         BluetoothDevice d=pairedDevices.get(p);
@@ -448,15 +501,15 @@ public class MainActivity extends Activity {
     private void sendSpecial(byte code){ if(keyboardReady()) executor.execute(()->sendReport((byte)0,code)); }
 
     private boolean keyboardReady(){
-        if(!hidRegistered || hid==null || host==null){ toast("Conecta primero el TV Stick como teclado Bluetooth"); return false; }
+        if(!hidRegistered || hid==null || host==null){ toast("Conecta primero el TV Stick por Bluetooth"); return false; }
         return true;
     }
 
     private void sendReport(byte mod,byte code){
         try{
-            hid.sendReport(host,0,new byte[]{mod,0,code,0,0,0,0,0});
+            hid.sendReport(host,1,new byte[]{mod,0,code,0,0,0,0,0});
             Thread.sleep(24);
-            hid.sendReport(host,0,new byte[]{0,0,0,0,0,0,0,0});
+            hid.sendReport(host,1,new byte[]{0,0,0,0,0,0,0,0});
             Thread.sleep(18);
         }catch(Exception ignored){}
     }
@@ -478,6 +531,151 @@ public class MainActivity extends Activity {
             case '!': return new HidKey((byte)0x02,(byte)0x1E);
             case '@': return new HidKey((byte)0x02,(byte)0x1F);
             default: return null;
+        }
+    }
+
+
+    private boolean bluetoothInputReady(){
+        return hidRegistered && hid!=null && host!=null;
+    }
+
+    private void sendMouseReport(int buttons,int dx,int dy,int wheel){
+        if(!bluetoothInputReady()) return;
+        dx=Math.max(-127,Math.min(127,dx));
+        dy=Math.max(-127,Math.min(127,dy));
+        wheel=Math.max(-127,Math.min(127,wheel));
+        try{
+            hid.sendReport(host,2,new byte[]{
+                    (byte)(buttons&0x07),(byte)dx,(byte)dy,(byte)wheel
+            });
+        }catch(Exception ignored){}
+    }
+
+    private void mouseClick(int buttonMask){
+        if(!bluetoothInputReady()){
+            toast("Conecta primero el TV Stick por Bluetooth");
+            return;
+        }
+        executor.execute(()->{
+            sendMouseReport(buttonMask,0,0,0);
+            try{ Thread.sleep(45); }catch(InterruptedException e){ Thread.currentThread().interrupt(); }
+            sendMouseReport(0,0,0,0);
+        });
+    }
+
+    private class TrackpadView extends View {
+        private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float lastX,lastY,downX,downY,lastTwoFingerY;
+        private long downTime;
+        private boolean moved=false,dragging=false,twoFinger=false;
+        private float scrollCarry=0f;
+        private final float sensitivity=1.7f;
+
+        TrackpadView(Context context){
+            super(context);
+            setBackground(round(Color.rgb(12,23,39),20));
+            setClickable(true);
+            paint.setTextAlign(Paint.Align.CENTER);
+        }
+
+        @Override protected void onDraw(Canvas canvas){
+            super.onDraw(canvas);
+            paint.setColor(MUTED);
+            paint.setTextSize(dp(17));
+            paint.setTypeface(Typeface.DEFAULT_BOLD);
+            canvas.drawText("TOUCHPAD",getWidth()/2f,getHeight()/2f-dp(5),paint);
+            paint.setTypeface(Typeface.DEFAULT);
+            paint.setTextSize(dp(12));
+            canvas.drawText("Desliza el dedo para mover el puntero",getWidth()/2f,getHeight()/2f+dp(22),paint);
+        }
+
+        @Override public boolean onTouchEvent(MotionEvent e){
+            if(e.getActionMasked()==MotionEvent.ACTION_DOWN){
+                if(!bluetoothInputReady()){
+                    toast("Conecta primero el TV Stick por Bluetooth");
+                    return true;
+                }
+                getParent().requestDisallowInterceptTouchEvent(true);
+                downX=lastX=e.getX();
+                downY=lastY=e.getY();
+                downTime=SystemClock.uptimeMillis();
+                moved=false; dragging=false; twoFinger=false; scrollCarry=0f;
+                return true;
+            }
+
+            if(e.getActionMasked()==MotionEvent.ACTION_POINTER_DOWN && e.getPointerCount()>=2){
+                twoFinger=true;
+                lastTwoFingerY=averageY(e);
+                scrollCarry=0f;
+                return true;
+            }
+
+            if(e.getActionMasked()==MotionEvent.ACTION_MOVE){
+                long now=SystemClock.uptimeMillis();
+
+                if(e.getPointerCount()>=2 || twoFinger){
+                    if(e.getPointerCount()>=2){
+                        float y=averageY(e);
+                        float delta=y-lastTwoFingerY;
+                        lastTwoFingerY=y;
+                        scrollCarry+=delta;
+                        float step=dp(18);
+                        int ticks=(int)(scrollCarry/step);
+                        if(ticks!=0){
+                            // Finger down -> scroll down; finger up -> scroll up.
+                            sendMouseReport(0,0,0,-ticks);
+                            scrollCarry-=ticks*step;
+                            moved=true;
+                        }
+                    }
+                    return true;
+                }
+
+                float x=e.getX(), y=e.getY();
+                float totalX=x-downX, totalY=y-downY;
+                float totalDist=(float)Math.hypot(totalX,totalY);
+
+                // Hold briefly, then move = drag with left button held.
+                if(!dragging && now-downTime>420 && totalDist<dp(18)){
+                    dragging=true;
+                    sendMouseReport(1,0,0,0);
+                    performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                }
+
+                float dx=(x-lastX)*sensitivity;
+                float dy=(y-lastY)*sensitivity;
+                lastX=x; lastY=y;
+
+                if(Math.abs(dx)>=0.7f || Math.abs(dy)>=0.7f){
+                    if(totalDist>dp(6)) moved=true;
+                    sendMouseReport(dragging?1:0,Math.round(dx),Math.round(dy),0);
+                }
+                return true;
+            }
+
+            if(e.getActionMasked()==MotionEvent.ACTION_POINTER_UP){
+                twoFinger=e.getPointerCount()-1>=2;
+                return true;
+            }
+
+            if(e.getActionMasked()==MotionEvent.ACTION_UP || e.getActionMasked()==MotionEvent.ACTION_CANCEL){
+                getParent().requestDisallowInterceptTouchEvent(false);
+                if(dragging){
+                    sendMouseReport(0,0,0,0);
+                }else if(e.getActionMasked()==MotionEvent.ACTION_UP && !moved && !twoFinger &&
+                        SystemClock.uptimeMillis()-downTime<320){
+                    mouseClick(1);
+                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                }
+                dragging=false; twoFinger=false;
+                return true;
+            }
+            return true;
+        }
+
+        private float averageY(MotionEvent e){
+            if(e.getPointerCount()<2) return e.getY();
+            return (e.getY(0)+e.getY(1))/2f;
         }
     }
 
@@ -507,8 +705,8 @@ public class MainActivity extends Activity {
         if(btStatus==null) return;
         if(bt==null){ btStatus.setText("● Sin Bluetooth"); btStatus.setTextColor(RED); return; }
         if(!hasBtPerm()){ btStatus.setText("● Permiso BT"); btStatus.setTextColor(Color.rgb(251,191,36)); return; }
-        if(host!=null){ btStatus.setText("● Teclado: "+safeName(host)); btStatus.setTextColor(GREEN); }
-        else if(hidRegistered){ btStatus.setText("● Teclado listo"); btStatus.setTextColor(ACCENT); }
+        if(host!=null){ btStatus.setText("● HID: "+safeName(host)); btStatus.setTextColor(GREEN); }
+        else if(hidRegistered){ btStatus.setText("● HID listo"); btStatus.setTextColor(ACCENT); }
         else if(hid!=null){ btStatus.setText("● BT disponible"); btStatus.setTextColor(MUTED); }
         else { btStatus.setText("● HID no disponible"); btStatus.setTextColor(Color.rgb(251,191,36)); }
     }
