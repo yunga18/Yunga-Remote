@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
     private BluetoothHidDevice hid;
     private BluetoothDevice host;
     private boolean hidRegistered=false;
+    private boolean pendingHidRegister=false;
     private Spinner pairedSpinner;
     private final ArrayList<BluetoothDevice> pairedDevices=new ArrayList<>();
     private final ArrayList<String> pairedNames=new ArrayList<>();
@@ -55,19 +56,18 @@ public class MainActivity extends Activity {
     private static final int IR_STEP_DELAY=95;
 
     // HID compuesto: Report ID 1 = teclado, Report ID 2 = mouse relativo.
-    // El TV Stick ve al Redmi como un único dispositivo teclado + mouse.
+    // Descriptor deliberadamente simple para maximizar compatibilidad con TV Box/Stick genéricos.
     private final byte[] hidDescriptor = new byte[] {
             // Keyboard - Report ID 1
             0x05,0x01,0x09,0x06,(byte)0xA1,0x01,(byte)0x85,0x01,
             0x05,0x07,0x19,(byte)0xE0,0x29,(byte)0xE7,
             0x15,0x00,0x25,0x01,0x75,0x01,(byte)0x95,0x08,(byte)0x81,0x02,
             (byte)0x95,0x01,0x75,0x08,(byte)0x81,0x01,
-            (byte)0x95,0x05,0x75,0x01,0x05,0x08,0x19,0x01,0x29,0x05,(byte)0x91,0x02,
-            (byte)0x95,0x01,0x75,0x03,(byte)0x91,0x01,
-            (byte)0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x65,0x05,0x07,
-            0x19,0x00,0x29,0x65,(byte)0x81,0x00,(byte)0xC0,
+            (byte)0x95,0x06,0x75,0x08,0x15,0x00,0x25,0x65,
+            0x05,0x07,0x19,0x00,0x29,0x65,(byte)0x81,0x00,
+            (byte)0xC0,
 
-            // Mouse - Report ID 2: buttons, X, Y, wheel
+            // Mouse - Report ID 2
             0x05,0x01,0x09,0x02,(byte)0xA1,0x01,(byte)0x85,0x02,
             0x09,0x01,(byte)0xA1,0x00,
             0x05,0x09,0x19,0x01,0x29,0x03,0x15,0x00,0x25,0x01,
@@ -81,8 +81,12 @@ public class MainActivity extends Activity {
     private final BluetoothHidDevice.Callback hidCallback=new BluetoothHidDevice.Callback(){
         @Override public void onAppStatusChanged(BluetoothDevice d, boolean registered){
             hidRegistered=registered;
-            if(d!=null) host=d;
+            if(!registered) host=null;
             runOnUiThread(()->{ updateBtStatus(); refreshPaired(); });
+            if(!registered && pendingHidRegister){
+                pendingHidRegister=false;
+                runOnUiThread(()->registerHidApp());
+            }
         }
         @Override public void onConnectionStateChanged(BluetoothDevice d,int state){
             if(state==BluetoothProfile.STATE_CONNECTED) host=d;
@@ -273,8 +277,8 @@ public class MainActivity extends Activity {
         TextView intro=txt("Sin instalar nada en el TV Stick: el celular funciona como teclado + mouse Bluetooth HID.",14,MUTED,false);
         kcard.addView(intro);
 
-        Button activate=action("1. Activar teclado + mouse Bluetooth",ACCENT,BG);
-        activate.setOnClickListener(v->registerKeyboard()); kcard.addView(top(activate,14));
+        Button activate=action("1. Reiniciar / activar teclado + mouse",ACCENT,BG);
+        activate.setOnClickListener(v->resetAndRegisterHid()); kcard.addView(top(activate,14));
 
         Button discover=action("2. Hacer visible el celular (5 min)",BTN,TEXT);
         discover.setOnClickListener(v->makeDiscoverable()); kcard.addView(top(discover,8));
@@ -448,17 +452,42 @@ public class MainActivity extends Activity {
         if(irKeyboardSynced){ irKeyboardSynced=false; updateIrKeyboardStatus(); }
     }
 
-    private void registerKeyboard(){
+    private void resetAndRegisterHid(){
         if(Build.VERSION.SDK_INT<28){ toast("Requiere Android 9 o superior"); return; }
         if(!hasBtPerm()){ requestBtPermissions(); return; }
         if(bt==null){ toast("Bluetooth no disponible"); return; }
         if(!bt.isEnabled()){ startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)); return; }
         if(hid==null){ toast("Perfil HID no disponible todavía"); return; }
-        if(hidRegistered){ toast("El teclado Bluetooth ya está activo"); return; }
+
+        // Fuerza a Android a olvidar cualquier descriptor HID anterior de esta app.
+        if(hidRegistered){
+            pendingHidRegister=true;
+            try{
+                boolean ok=hid.unregisterApp();
+                toast(ok?"Reiniciando perfil teclado + mouse…":"No se pudo reiniciar el perfil HID");
+                if(!ok) pendingHidRegister=false;
+            }catch(Exception e){
+                pendingHidRegister=false;
+                toast("No se pudo reiniciar el perfil HID");
+            }
+        }else{
+            registerHidApp();
+        }
+    }
+
+    private void registerHidApp(){
+        if(hid==null || hidRegistered) return;
         BluetoothHidDeviceAppSdpSettings sdp=new BluetoothHidDeviceAppSdpSettings(
-                "Yunga Remote","Teclado y touchpad para TV Stick","Yunga",BluetoothHidDevice.SUBCLASS1_COMBO,hidDescriptor);
-        boolean ok=hid.registerApp(sdp,null,null,getMainExecutor(),hidCallback);
-        toast(ok?"Activando teclado + mouse Bluetooth…":"Android rechazó la activación HID");
+                "Yunga Remote",
+                "Teclado y touchpad para TV Stick",
+                "Yunga",
+                BluetoothHidDevice.SUBCLASS1_COMBO,
+                hidDescriptor
+        );
+        boolean ok=false;
+        try{ ok=hid.registerApp(sdp,null,null,getMainExecutor(),hidCallback); }
+        catch(Exception ignored){}
+        toast(ok?"Activando perfil teclado + mouse…":"Android rechazó la activación HID");
     }
 
     private void makeDiscoverable(){
@@ -718,8 +747,14 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy(){
-        super.onDestroy(); executor.shutdownNow();
-        if(bt!=null && hid!=null) try{ bt.closeProfileProxy(BluetoothProfile.HID_DEVICE,hid); }catch(Exception ignored){}
+        super.onDestroy();
+        executor.shutdownNow();
+        if(hid!=null){
+            try{ if(hidRegistered) hid.unregisterApp(); }catch(Exception ignored){}
+        }
+        if(bt!=null && hid!=null){
+            try{ bt.closeProfileProxy(BluetoothProfile.HID_DEVICE,hid); }catch(Exception ignored){}
+        }
     }
 
     private LinearLayout col(){ LinearLayout l=new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); return l; }
