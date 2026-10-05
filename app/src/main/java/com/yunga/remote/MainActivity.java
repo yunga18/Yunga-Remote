@@ -42,6 +42,16 @@ public class MainActivity extends Activity {
     private final ArrayList<String> pairedNames=new ArrayList<>();
     private final ExecutorService executor=Executors.newSingleThreadExecutor();
 
+    // Teclado IR de XTV: la distribución observada es
+    // A B C D E F G
+    // H I J K L M N
+    // O P Q R S T U
+    // V W X Y Z [ESPACIO]
+    // Encima: 123 | limpiar | retroceso | Busca
+    private volatile boolean irKeyboardSynced=false;
+    private TextView irKeyboardStatus;
+    private static final int IR_STEP_DELAY=95;
+
     private final byte[] keyboardDescriptor = new byte[] {
             0x05,0x01,0x09,0x06,(byte)0xA1,0x01,0x05,0x07,0x19,(byte)0xE0,0x29,(byte)0xE7,
             0x15,0x00,0x25,0x01,0x75,0x01,(byte)0x95,0x08,(byte)0x81,0x02,
@@ -142,6 +152,69 @@ public class MainActivity extends Activity {
         media.addView(remoteButton("🖱  Mouse",BTN,CMD_MOUSE,14),weight(58));
         card.addView(media);
 
+        root.addView(section("TECLADO IR · XTV"));
+        LinearLayout irKCard=card(); root.addView(irKCard);
+
+        TextView irIntro=txt("Usa el teclado que aparece dentro de XTV sin Bluetooth. Primero coloca el cursor del TV sobre la letra A y sincroniza.",14,MUTED,false);
+        irKCard.addView(irIntro);
+
+        irKeyboardStatus=txt("● Sin sincronizar",13,Color.rgb(251,191,36),true);
+        irKeyboardStatus.setPadding(0,dp(12),0,dp(8));
+        irKCard.addView(irKeyboardStatus);
+
+        Button syncA=action("✓ El cursor está en A — Sincronizar",GREEN,BG);
+        syncA.setOnClickListener(v->{ irKeyboardSynced=true; updateIrKeyboardStatus(); toast("Teclado IR sincronizado en A"); });
+        irKCard.addView(top(syncA,4));
+
+        TextView irHint=txt("Después de cada letra, Yunga Remote devuelve automáticamente el cursor a A para no perder la posición.",12,MUTED,false);
+        irHint.setPadding(0,dp(10),0,dp(10)); irKCard.addView(irHint);
+
+        String[] irRows={"ABCDEFG","HIJKLMN","OPQRSTU","VWXYZ"};
+        for(String letters:irRows){
+            LinearLayout keyRow=row();
+            keyRow.setPadding(0,dp(4),0,0);
+            for(int i=0;i<letters.length();i++){
+                if(i>0) keyRow.addView(space(dp(4),1));
+                char ch=letters.charAt(i);
+                Button kb=irKeyButton(String.valueOf(ch),ch);
+                keyRow.addView(kb,new LinearLayout.LayoutParams(0,dp(48),1));
+            }
+            irKCard.addView(keyRow);
+        }
+
+        Button irSpace=action("␠  ESPACIO",BTN,TEXT);
+        irSpace.setOnClickListener(v->queueIrCharacter(' '));
+        irKCard.addView(top(irSpace,8));
+
+        EditText irInput=new EditText(this);
+        irInput.setHint("O escribe una palabra/frase aquí…");
+        irInput.setHintTextColor(MUTED); irInput.setTextColor(TEXT); irInput.setTextSize(16);
+        irInput.setSingleLine(false); irInput.setMaxLines(3);
+        irInput.setPadding(dp(14),dp(12),dp(14),dp(12)); irInput.setBackground(round(Color.rgb(12,23,39),14));
+        LinearLayout.LayoutParams irInputLp=new LinearLayout.LayoutParams(-1,-2); irInputLp.topMargin=dp(12);
+        irKCard.addView(irInput,irInputLp);
+
+        Button irSend=action("⌨  Escribir por infrarrojo",ACCENT,BG);
+        irSend.setOnClickListener(v->{
+            String q=irInput.getText().toString();
+            if(q.trim().isEmpty()) toast("Escribe algo primero");
+            else if(!irKeyboardSynced) toast("Coloca el cursor en A y pulsa Sincronizar");
+            else { sendIrText(q); irInput.setText(""); }
+        });
+        irKCard.addView(top(irSend,8));
+
+        LinearLayout irSpecial=row(); irSpecial.setPadding(0,dp(8),0,0);
+        Button irClear=action("🗑 Limpiar",BTN,TEXT); irClear.setOnClickListener(v->queueIrSpecial(1,false));
+        Button irBackspace=action("⌫ Borrar",BTN,TEXT); irBackspace.setOnClickListener(v->queueIrSpecial(2,false));
+        Button irSearch=action("🔎 Busca",ACCENT,BG); irSearch.setOnClickListener(v->queueIrSpecial(3,true));
+        irSpecial.addView(irClear,weight(52)); irSpecial.addView(space(dp(6),1));
+        irSpecial.addView(irBackspace,weight(52)); irSpecial.addView(space(dp(6),1));
+        irSpecial.addView(irSearch,weight(52));
+        irKCard.addView(irSpecial);
+
+        TextView irNote=txt("Este modo está calibrado para la disposición de XTV de tu foto. Si mueves el cursor manualmente, vuelve a colocarlo sobre A y pulsa Sincronizar.",12,MUTED,false);
+        irNote.setPadding(0,dp(12),0,0); irKCard.addView(irNote);
+
         root.addView(section("TECLADO BLUETOOTH"));
         LinearLayout kcard=card(); root.addView(kcard);
         TextView intro=txt("Sin instalar nada en el TV Stick: el celular intenta funcionar como teclado Bluetooth HID.",14,MUTED,false);
@@ -222,6 +295,106 @@ public class MainActivity extends Activity {
         int[] p=new int[67]; int x=0; p[x++]=9000; p[x++]=4500;
         for(int value:bytes) for(int bit=0;bit<8;bit++){ p[x++]=560; p[x++]=((value>>bit)&1)==1?1690:560; }
         p[x]=560; return p;
+    }
+
+    private Button irKeyButton(String label,char ch){
+        Button b=action(label,BTN,TEXT);
+        b.setTextSize(16);
+        b.setOnClickListener(v->queueIrCharacter(ch));
+        return b;
+    }
+
+    private void queueIrCharacter(char ch){
+        if(!irKeyboardSynced){ toast("Coloca el cursor del TV en A y pulsa Sincronizar"); return; }
+        executor.execute(()->typeIrCharacter(ch));
+    }
+
+    private void sendIrText(String text){
+        if(!irKeyboardSynced){ toast("Coloca el cursor del TV en A y pulsa Sincronizar"); return; }
+        final String copy=text;
+        executor.execute(()->{
+            for(char raw:copy.toCharArray()){
+                char ch=normalizeIrChar(raw);
+                if(ch==0) continue;
+                typeIrCharacter(ch);
+            }
+        });
+    }
+
+    private char normalizeIrChar(char c){
+        c=Character.toUpperCase(c);
+        switch(c){
+            case 'Á': case 'À': case 'Ä': case 'Â': return 'A';
+            case 'É': case 'È': case 'Ë': case 'Ê': return 'E';
+            case 'Í': case 'Ì': case 'Ï': case 'Î': return 'I';
+            case 'Ó': case 'Ò': case 'Ö': case 'Ô': return 'O';
+            case 'Ú': case 'Ù': case 'Ü': case 'Û': return 'U';
+            case 'Ñ': return 'N';
+            case '\n': case '\t': return ' ';
+            default:
+                if((c>='A'&&c<='Z') || c==' ') return c;
+                return 0;
+        }
+    }
+
+    private void typeIrCharacter(char ch){
+        if(!irKeyboardSynced) return;
+        int row=-1,col=-1;
+        String[] rows={"ABCDEFG","HIJKLMN","OPQRSTU","VWXYZ "};
+        for(int r=0;r<rows.length;r++){
+            int c=rows[r].indexOf(ch);
+            if(c>=0){ row=r; col=c; break; }
+        }
+        if(row<0) return;
+
+        // El cursor lógico siempre parte de A. Va a la tecla, pulsa OK y vuelve a A.
+        for(int i=0;i<row;i++) irStep(CMD_DOWN);
+        for(int i=0;i<col;i++) irStep(CMD_RIGHT);
+        irStep(CMD_OK);
+        sleepIr(35);
+        for(int i=0;i<row;i++) irStep(CMD_UP);
+        for(int i=0;i<8;i++) irStep(CMD_LEFT);
+    }
+
+    private void queueIrSpecial(int topIndex,boolean leavesKeyboard){
+        if(!irKeyboardSynced){ toast("Coloca el cursor del TV en A y pulsa Sincronizar"); return; }
+        executor.execute(()->{
+            // Desde A: subir entra a la fila 123 | limpiar | retroceso | Busca.
+            irStep(CMD_UP);
+            for(int i=0;i<topIndex;i++) irStep(CMD_RIGHT);
+            irStep(CMD_OK);
+            if(leavesKeyboard){
+                irKeyboardSynced=false;
+                runOnUiThread(this::updateIrKeyboardStatus);
+            }else{
+                sleepIr(40);
+                irStep(CMD_DOWN);
+                for(int i=0;i<8;i++) irStep(CMD_LEFT);
+            }
+        });
+    }
+
+    private void irStep(int command){
+        if(ir==null || !ir.hasIrEmitter()){ irKeyboardSynced=false; runOnUiThread(this::updateIrKeyboardStatus); return; }
+        try{ ir.transmit(IR_FREQ,nec(NEC_ADDR,command)); }catch(Exception ignored){}
+        sleepIr(IR_STEP_DELAY);
+    }
+
+    private void sleepIr(long ms){ try{ Thread.sleep(ms); }catch(InterruptedException e){ Thread.currentThread().interrupt(); } }
+
+    private void updateIrKeyboardStatus(){
+        if(irKeyboardStatus==null) return;
+        if(irKeyboardSynced){
+            irKeyboardStatus.setText("● Sincronizado · cursor base A");
+            irKeyboardStatus.setTextColor(GREEN);
+        }else{
+            irKeyboardStatus.setText("● Sin sincronizar");
+            irKeyboardStatus.setTextColor(Color.rgb(251,191,36));
+        }
+    }
+
+    private void invalidateIrKeyboard(){
+        if(irKeyboardSynced){ irKeyboardSynced=false; updateIrKeyboardStatus(); }
     }
 
     private void registerKeyboard(){
@@ -368,7 +541,13 @@ public class MainActivity extends Activity {
     private Button remoteButton(String label,int bg,int cmd,int sp){
         Button b=new Button(this); b.setText(label); b.setTextColor(bg==ACCENT?BG:TEXT); b.setTextSize(sp);
         b.setAllCaps(false); b.setGravity(Gravity.CENTER); b.setBackground(round(bg,22));
-        b.setOnClickListener(v->{ v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP); transmit(cmd); }); return b;
+        b.setOnClickListener(v->{
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            if(cmd==CMD_UP || cmd==CMD_DOWN || cmd==CMD_LEFT || cmd==CMD_RIGHT || cmd==CMD_OK || cmd==CMD_HOME || cmd==CMD_BACK || cmd==CMD_MENU || cmd==CMD_MOUSE){
+                invalidateIrKeyboard();
+            }
+            transmit(cmd);
+        }); return b;
     }
 
     private Button action(String s,int bg,int fg){
